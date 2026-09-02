@@ -352,6 +352,7 @@ class LivisWSClient:
         self._running = False
         self._hb_task: asyncio.Task | None = None
         self._last_pong_at = 0.0
+        self._connected_at: float | None = None
         self._last_msg_at = 0.0  # C3: 路由失联监控
         self._inactivity_warned = False
 
@@ -367,6 +368,7 @@ class LivisWSClient:
         log.info("连接中继: %s (agent=%s)", url, self.agent_id)
         self._ws = await websockets.connect(url)
         self._running = True
+        self._connected_at = __import__("time").time()
         self._last_pong_at = __import__("time").time()
         await self._send_connect_handshake()
         self._hb_task = asyncio.create_task(self._heartbeat_loop())
