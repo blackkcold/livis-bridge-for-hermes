@@ -1,0 +1,34 @@
+name: Feature request
+description: 提出一个新功能或改进想法
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请描述清楚**场景**（你想解决什么问题），而不是只给方案。协议相关改动请注明"外部观察所得"。
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景
+      description: 你在什么情况下需要这个功能？
+      placeholder: 例如：想在多台电脑间切换同一副眼镜连接的 agent...
+    validations:
+      required: true
+  - type: textarea
+    id: desired
+    attributes:
+      label: 期望行为
+      description: 你希望它如何工作？
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 备选方案
+      description: 有没有考虑过其他做法？
+  - type: textarea
+    id: notes
+    attributes:
+      label: 其他说明
+      description: 额外上下文、参考链接等

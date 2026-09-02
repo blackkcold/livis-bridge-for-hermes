@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security 敏感信息报告（token/凭据泄露）
+    url: https://github.com/blackkcold/livis-bridge/security/advisories/new
+    about: 涉及 token / agentId / deviceId 等敏感凭据的问题，请使用 GitHub 私密安全报告渠道，勿公开提交。

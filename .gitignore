@@ -1,0 +1,20 @@
+# 运行时数据（含 tokens / agentId / deviceId / SQLite —— 绝不入库！）
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# 测试/构建缓存
+.pytest_cache/
+*.log
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/

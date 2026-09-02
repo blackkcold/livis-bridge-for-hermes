@@ -1,0 +1,37 @@
+services:
+  # 测试/开发用 mock 中继（模拟理想 livis-pc-kit-gateway）
+  mock-relay:
+    build: .
+    command: python -m scripts.mock_relay --port 8765
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      - LIVIS_WS_URL=ws://0.0.0.0:8765/api/v1/ws
+    volumes:
+      - ./scripts:/app/scripts
+
+  # bridge 主服务（开发模式下连 mock-relay）
+  bridge:
+    build: .
+    command: python -m src.cli server --ws-url ws://mock-relay:8765/api/v1/ws
+    depends_on:
+      - mock-relay
+    environment:
+      - LIVIS_DATA_DIR=/app/data
+      - HERMES_BIN=/app/scripts/fake_hermes.sh
+    volumes:
+      - ./data:/app/data
+      - ./scripts:/app/scripts
+
+  # 测试容器：跑全套 pytest
+  test:
+    build: .
+    command: python -m pytest tests/ -v
+    depends_on:
+      - mock-relay
+    environment:
+      - LIVIS_WS_URL=ws://mock-relay:8765/api/v1/ws
+      - HERMES_BIN=/app/scripts/fake_hermes.sh
+      - LIVIS_DATA_DIR=/tmp/test-data
+    volumes:
+      - ./scripts:/app/scripts
