@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 import urllib.request
@@ -63,12 +64,15 @@ def webui(tmp_path):
     livis_cfg = LivisConfig(data_dir=tmp_path)
     state = WebUIState(bridge=bridge, client=client, livis_cfg=livis_cfg)
     log_buffer = LogBuffer()
+    # 挂到 root logger（与 cli.py 一致），测试结束移除
+    logging.getLogger().addHandler(log_buffer)
     server = WebUIServer(state=state, host="127.0.0.1", port=0, log_buffer=log_buffer)
     # port=0 → 自动分配
     server.port = 0
     assert server.start()
     yield server, state
     server.stop()
+    logging.getLogger().removeHandler(log_buffer)
 
 
 def _get(url: str) -> dict:
@@ -101,6 +105,25 @@ def test_jobs_endpoint(webui):
     assert data["failed"] == 1
     assert len(data["recent"]) == 2
     assert data["recent"][0]["job_id"] == "job-2"  # 按时间倒序
+    assert data["has_more"] is False
+
+
+def test_jobs_pagination(webui):
+    """分页：limit=1 时 has_more=True，offset 翻页。"""
+    server, state = webui
+    base = f"http://127.0.0.1:{server.actual_port}"
+    page1 = _get(f"{base}/api/jobs?limit=1&offset=0")
+    assert len(page1["recent"]) == 1
+    assert page1["has_more"] is True
+    assert page1["recent"][0]["job_id"] == "job-2"
+    page2 = _get(f"{base}/api/jobs?limit=1&offset=1")
+    assert len(page2["recent"]) == 1
+    assert page2["has_more"] is False
+    assert page2["recent"][0]["job_id"] == "job-1"
+    # 越界 offset 返回空
+    page3 = _get(f"{base}/api/jobs?limit=1&offset=99")
+    assert page3["recent"] == []
+    assert page3["has_more"] is False
 
 
 def test_logs_endpoint(webui):
@@ -109,6 +132,76 @@ def test_logs_endpoint(webui):
     data = _get(f"{base}/api/logs")
     assert "lines" in data
     assert isinstance(data["lines"], list)
+    assert "config" in data
+    assert data["config"]["enabled"] is True
+
+
+def test_logs_clear(webui):
+    """清空日志接口。"""
+    server, state = webui
+    base = f"http://127.0.0.1:{server.actual_port}"
+    import urllib.request
+    req = urllib.request.Request(f"{base}/api/logs/clear", method="POST")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        data = json.loads(resp.read())
+    assert data["ok"] is True
+    after = _get(f"{base}/api/logs")
+    assert after["lines"] == []
+
+
+def test_logs_config_toggle(webui):
+    """日志开关：关闭后不再记录新日志。"""
+    server, state = webui
+    base = f"http://127.0.0.1:{server.actual_port}"
+    import urllib.request
+
+    def post_config(body):
+        req = urllib.request.Request(
+            f"{base}/api/logs/config", method="POST",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read())
+
+    # 关闭记录
+    r = post_config({"enabled": False})
+    assert r["config"]["enabled"] is False
+    # 写入一条日志（应被忽略）
+    import logging
+    logging.getLogger("livis.webui.test").warning("should-not-appear")
+    after = _get(f"{base}/api/logs")
+    assert all("should-not-appear" not in line for line in after["lines"])
+    # 重新开启
+    r2 = post_config({"enabled": True})
+    assert r2["config"]["enabled"] is True
+
+
+def test_logs_max_age_cleanup(webui):
+    """max_age 自动清理过期日志。"""
+    server, state = webui
+    base = f"http://127.0.0.1:{server.actual_port}"
+    import urllib.request
+
+    def post_config(body):
+        req = urllib.request.Request(
+            f"{base}/api/logs/config", method="POST",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read())
+
+    # 设置 max_age=0（永久保留）→ 写入 → 设置 max_age=1s → 等 1.5s → 应被清理
+    post_config({"max_age": 0})
+    import logging
+    logging.getLogger("livis.webui.test").warning("expiring-log-line")
+    assert any("expiring-log-line" in line for line in _get(f"{base}/api/logs")["lines"])
+    post_config({"max_age": 1})
+    import time as _t
+    _t.sleep(1.5)
+    after = _get(f"{base}/api/logs")
+    assert all("expiring-log-line" not in line for line in after["lines"])
 
 
 def test_index_html(webui):

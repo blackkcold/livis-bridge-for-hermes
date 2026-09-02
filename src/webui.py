@@ -35,17 +35,44 @@ LOG_BUFFER_MAX = 200
 
 
 class LogBuffer(logging.Handler):
-    """进程内日志环形缓冲（WebUI 读取，不碰日志文件）。"""
+    """进程内日志环形缓冲（WebUI 读取，不碰日志文件）。
 
-    def __init__(self, maxlen: int = LOG_BUFFER_MAX):
+    增强:
+      - enabled: 记录开关（关闭后不再接收新日志，但保留已有）
+      - max_age: 自动清理（读取时过滤超过 max_age 秒的条目）
+      - clear(): 清空缓冲
+    """
+
+    def __init__(self, maxlen: int = LOG_BUFFER_MAX, max_age: int = 3600):
         super().__init__()
-        self.buffer: deque[str] = deque(maxlen=maxlen)
+        self.buffer: deque[tuple[float, str]] = deque(maxlen=maxlen)
+        self.enabled = True
+        self.max_age = max_age  # 秒；0 = 不过期
 
     def emit(self, record: logging.LogRecord) -> None:
+        if not self.enabled:
+            return
         try:
-            self.buffer.append(self.format(record))
+            self.buffer.append((time.time(), self.format(record)))
         except Exception:
             pass
+
+    def lines(self, max_lines: int = 50) -> list[str]:
+        """读取（自动清理过期条目）。"""
+        now = time.time()
+        if self.max_age > 0:
+            # 从尾部保留未过期条目
+            fresh = [t for t in self.buffer if now - t[0] <= self.max_age]
+            if len(fresh) != len(self.buffer):
+                self.buffer.clear()
+                self.buffer.extend(fresh)
+        return [text for _, text in list(self.buffer)[-max_lines:]]
+
+    def clear(self) -> None:
+        self.buffer.clear()
+
+    def config(self) -> dict:
+        return {"enabled": self.enabled, "max_age": self.max_age, "size": len(self.buffer)}
 
 
 class WebUIState:
@@ -115,9 +142,16 @@ class WebUIState:
         out["bridge"] = {"active_job": active_job, "queue_size": queue_size}
         return out
 
-    def jobs(self, limit: int = 10) -> dict[str, Any]:
-        """会话统计 + 最近记录（独立只读连接，避免跨线程复用 bridge 连接）。"""
-        out: dict[str, Any] = {"total": 0, "executing": 0, "result_pending": 0, "acked": 0, "failed": 0, "recent": []}
+    def jobs(self, limit: int = 10, offset: int = 0) -> dict[str, Any]:
+        """会话统计 + 最近记录（独立只读连接，避免跨线程复用 bridge 连接）。
+
+        limit: 每页条数（默认 10，前端默认取 5）
+        offset: 分页偏移（加载更多用）
+        """
+        out: dict[str, Any] = {
+            "total": 0, "executing": 0, "result_pending": 0, "acked": 0, "failed": 0,
+            "recent": [], "offset": offset, "limit": limit, "has_more": False,
+        }
         if self.bridge is None:
             return out
         import sqlite3
@@ -134,10 +168,15 @@ class WebUIState:
                     if key in out:
                         out[key] = row["c"]
                 out["total"] = sum(out[k] for k in ("executing", "result_pending", "acked", "failed"))
+                limit = max(1, min(limit, 50))
+                offset = max(0, offset)
                 rows = conn.execute(
-                    "SELECT job_id, content, state, result, error, created_at, updated_at FROM jobs ORDER BY created_at DESC LIMIT ?",
-                    (max(1, min(limit, 50)),),
+                    "SELECT job_id, content, state, result, error, created_at, updated_at FROM jobs ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    (limit + 1, offset),  # 多取 1 条判断 has_more
                 ).fetchall()
+                has_more = len(rows) > limit
+                rows = rows[:limit]
+                out["has_more"] = has_more
                 out["recent"] = [
                     {
                         "job_id": r["job_id"],
@@ -204,16 +243,19 @@ class WebUIHandler(BaseHTTPRequestHandler):
         if path == "/api/status":
             self._send_json(self.state.snapshot() if self.state else {"ok": False})
         elif path == "/api/jobs":
-            limit = 10
+            limit, offset = 10, 0
             try:
                 qs = self.path.split("?", 1)[1]
-                limit = int(dict(p.split("=") for p in qs.split("&")).get("limit", "10"))
+                params = dict(p.split("=") for p in qs.split("&") if "=" in p)
+                limit = int(params.get("limit", "10"))
+                offset = int(params.get("offset", "0"))
             except Exception:
                 pass
-            self._send_json(self.state.jobs(limit) if self.state else {"ok": False})
+            self._send_json(self.state.jobs(limit, offset) if self.state else {"ok": False})
         elif path == "/api/logs":
-            lines = list(self.log_buffer.buffer) if self.log_buffer else []
-            self._send_json({"lines": lines[-50:]})
+            lines = self.log_buffer.lines(50) if self.log_buffer else []
+            cfg = self.log_buffer.config() if self.log_buffer else {}
+            self._send_json({"lines": lines, "config": cfg})
         elif path in ("/", "/index.html"):
             self._send_html(INDEX_HTML)
         else:
@@ -230,6 +272,20 @@ class WebUIHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "msg": "reconnect 已触发"})
             except Exception as e:
                 self._send_json({"ok": False, "error": str(e)}, 500)
+        elif path == "/api/logs/clear" and self.log_buffer:
+            self.log_buffer.clear()
+            self._send_json({"ok": True, "msg": "日志已清空"})
+        elif path == "/api/logs/config" and self.log_buffer:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length).decode() or "{}") if length else {}
+                if "enabled" in body:
+                    self.log_buffer.enabled = bool(body["enabled"])
+                if "max_age" in body:
+                    self.log_buffer.max_age = max(0, int(body["max_age"]))
+                self._send_json({"ok": True, "config": self.log_buffer.config()})
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, 400)
         else:
             self._send_json({"error": "not found"}, 404)
 
@@ -378,7 +434,7 @@ td.mono { font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
 </div>
 
 <div class="card" style="margin-top:12px">
-  <h2>🕘 最近任务</h2>
+  <h2>🕘 最近任务 <button class="btn" id="btn-load-more" style="float:right;display:none">加载更多</button></h2>
   <table>
     <thead><tr><th>时间</th><th>内容</th><th>状态</th><th>结果/错误</th></tr></thead>
     <tbody id="jobs-recent"><tr><td colspan="4" style="color:var(--muted)">暂无数据</td></tr></tbody>
@@ -386,7 +442,14 @@ td.mono { font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
 </div>
 
 <div class="card" style="margin-top:12px">
-  <h2>📜 日志尾部 <button class="btn" id="btn-reconnect" style="float:right">🔄 触发重连</button></h2>
+  <h2>📜 日志尾部
+    <span style="float:right">
+      <label style="font-size:12px;color:var(--muted);margin-right:8px"><input type="checkbox" id="log-enabled" checked> 记录</label>
+      <button class="btn" id="btn-log-clear" style="margin-right:4px">🗑 清空</button>
+      <button class="btn" id="btn-reconnect">🔄 触发重连</button>
+    </span>
+  </h2>
+  <div style="font-size:11px;color:var(--muted);margin-bottom:6px" id="log-config">-</div>
   <div class="logs" id="logs">加载中…</div>
 </div>
 
@@ -421,7 +484,10 @@ function renderStatus(s) {
   $('sub').textContent = 'agent: ' + (id.agent_id || '?') + ' · 刷新于 ' + new Date().toLocaleTimeString('zh-CN', {hour12:false});
 }
 
-function renderJobs(j) {
+let jobsOffset = 0;
+const JOBS_PAGE = 5;
+
+function renderJobs(j, append) {
   $('jobs-total').textContent = j.total;
   $('jobs-counts').textContent = j.executing + ' / ' + j.result_pending + ' / ' + j.acked + ' / ' + j.failed;
   const bar = $('jobs-bar');
@@ -436,10 +502,9 @@ function renderJobs(j) {
     }
   }
   const tbody = $('jobs-recent');
-  tbody.innerHTML = '';
+  if (!append) tbody.innerHTML = '';
   if (!j.recent || !j.recent.length) {
-    tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">暂无数据</td></tr>';
-    return;
+    if (!append) tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">暂无数据</td></tr>';
   }
   for (const r of j.recent) {
     const tr = document.createElement('tr');
@@ -449,26 +514,70 @@ function renderJobs(j) {
       + '<td class="mono">' + (r.result || r.error || '').replace(/</g, '&lt;').slice(0, 60) + '</td>';
     tbody.appendChild(tr);
   }
+  // 加载更多按钮
+  const btn = $('btn-load-more');
+  if (j.has_more) {
+    btn.style.display = 'inline-block';
+  } else {
+    btn.style.display = 'none';
+  }
+}
+
+async function loadJobs(append) {
+  try {
+    const r = await fetch('/api/jobs?limit=' + JOBS_PAGE + '&offset=' + jobsOffset).then(r => r.json());
+    renderJobs(r, append);
+    jobsOffset += r.recent.length;
+  } catch (e) {
+    console.error('jobs 加载失败', e);
+  }
 }
 
 function renderLogs(l) {
   $('logs').textContent = (l.lines || []).join('\n') || '(空)';
   const el = $('logs');
   el.scrollTop = el.scrollHeight;
+  const cfg = l.config || {};
+  $('log-config').textContent = '缓冲 ' + (cfg.size ?? '-') + ' 条 · 保留 ' + (cfg.max_age ? cfg.max_age + 's' : '永久') + (cfg.enabled ? '' : ' · 已暂停记录');
+  $('log-enabled').checked = cfg.enabled !== false;
 }
 
 async function refresh() {
   try {
-    const [s, j, l] = await Promise.all([
+    const [s, l] = await Promise.all([
       fetch('/api/status').then(r => r.json()),
-      fetch('/api/jobs').then(r => r.json()),
       fetch('/api/logs').then(r => r.json()),
     ]);
-    renderStatus(s); renderJobs(j); renderLogs(l);
+    renderStatus(s); renderLogs(l);
   } catch (e) {
     $('banner-text').textContent = '看板数据获取失败: ' + e;
   }
 }
+
+$('btn-load-more').addEventListener('click', () => loadJobs(true));
+
+$('btn-log-clear').addEventListener('click', async () => {
+  try {
+    await fetch('/api/logs/clear', {method: 'POST'});
+    $('logs').textContent = '(已清空)';
+  } catch (e) {
+    $('logs').textContent = '清空失败: ' + e;
+  }
+});
+
+$('log-enabled').addEventListener('change', async (e) => {
+  try {
+    const r = await fetch('/api/logs/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: e.target.checked}),
+    });
+    const d = await r.json();
+    if (d.config) $('log-config').textContent = '缓冲 ' + d.config.size + ' 条 · 保留 ' + (d.config.max_age ? d.config.max_age + 's' : '永久') + (d.config.enabled ? '' : ' · 已暂停记录');
+  } catch (err) {
+    console.error('日志开关失败', err);
+  }
+});
 
 $('btn-reconnect').addEventListener('click', async () => {
   const btn = $('btn-reconnect');
@@ -484,6 +593,7 @@ $('btn-reconnect').addEventListener('click', async () => {
 });
 
 refresh();
+loadJobs(false);
 setInterval(refresh, 3000);
 </script>
 </body>
