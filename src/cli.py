@@ -80,11 +80,26 @@ async def cmd_run(content: str, livis_cfg: LivisConfig, verbose: bool) -> int:
 
 # ── server（主循环）───────────────────────────────────────────────────
 
-async def cmd_server(livis_cfg: LivisConfig, verbose: bool) -> int:
+async def cmd_server(livis_cfg: LivisConfig, verbose: bool, webui_port: int = 8766, webui_host: str = "127.0.0.1", webui_token: str | None = None) -> int:
     _setup_logging(verbose)
     cfg = BridgeConfig.from_env()
     adapter = HermesAdapter(bin=cfg.hermes_bin, timeout=cfg.hermes_timeout)
     bridge = Bridge(cfg, livis_cfg, adapter)
+
+    # ── WebUI（独立线程，异常不影响主链路）────────────────────────
+    from .webui import LogBuffer, WebUIServer, WebUIState
+
+    log_buffer = LogBuffer()
+    logging.getLogger().addHandler(log_buffer)
+    webui_state = WebUIState(bridge=bridge, livis_cfg=livis_cfg)
+    webui = WebUIServer(
+        state=webui_state,
+        host=webui_host,
+        port=webui_port,
+        token=webui_token,
+        log_buffer=log_buffer,
+    )
+    webui.start()
 
     while True:
         try:
@@ -93,16 +108,19 @@ async def cmd_server(livis_cfg: LivisConfig, verbose: bool) -> int:
             await client.connect()
             await bridge.start()
             bridge.set_client(client)  # 注入 WS client，结果才能发出
+            webui_state.client = client  # WebUI 读取连接状态
             await bridge.on_reconnect(client)  # 启动即对账一次
             log.info("bridge 运行中 (agent=%s)", client.agent_id)
             try:
                 await client.recv_loop()
             finally:
                 bridge.set_client(None)
+                webui_state.client = None
                 await client.close()
         except asyncio.CancelledError:
             log.info("bridge 停止")
             await bridge.stop()
+            webui.stop()
             return 0
         except Exception as e:
             log.error("连接异常: %s — 5s 后重连", e)
@@ -162,6 +180,9 @@ def main() -> int:
 
     p_server = sub.add_parser("server", help="运行 bridge 主循环")
     p_server.add_argument("--ws-url", default=None, help="覆盖 WS URL（默认连真实中继）")
+    p_server.add_argument("--webui-port", type=int, default=8766, help="WebUI 端口（默认 8766，冲突自动 +1）")
+    p_server.add_argument("--webui-host", default="127.0.0.1", help="WebUI 绑定地址（默认仅本机）")
+    p_server.add_argument("--webui-token", default=None, help="WebUI 访问 token（远程访问时必填）")
 
     args = parser.parse_args()
     livis_cfg = LivisConfig.from_env()
@@ -173,7 +194,10 @@ def main() -> int:
     if args.cmd == "run":
         return asyncio.run(cmd_run(args.content, livis_cfg, args.verbose))
     if args.cmd == "server":
-        return asyncio.run(cmd_server(livis_cfg, args.verbose))
+        return asyncio.run(cmd_server(
+            livis_cfg, args.verbose,
+            webui_port=args.webui_port, webui_host=args.webui_host, webui_token=args.webui_token,
+        ))
     if args.cmd == "status":
         return asyncio.run(cmd_status(livis_cfg, args.verbose))
     if args.cmd == "uninstall":
