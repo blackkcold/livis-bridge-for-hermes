@@ -167,7 +167,7 @@ async def cmd_uninstall(livis_cfg: LivisConfig, verbose: bool) -> int:
 # ── main ──────────────────────────────────────────────────────────────
 
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="livis-bridge", description="Livis ↔ Hermes bridge")
+    parser = argparse.ArgumentParser(prog="livis-bridge-for-hermes", description="Livis ↔ Hermes bridge")
     parser.add_argument("-v", "--verbose", action="store_true", help="DEBUG 日志")
     sub = parser.add_subparsers(dest="cmd", required=True)
 

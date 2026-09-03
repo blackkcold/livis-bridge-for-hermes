@@ -136,7 +136,7 @@ cancel_chat   ──► proc.kill()（无优雅信号，硬杀可接受）
 ## 4. 文件结构
 
 ```
-livis-bridge/
+livis-bridge-for-hermes/
 ├── PLAN.md                    # 本文档
 ├── Dockerfile                 # python:3.11-slim + websockets/httpx/sqlite3
 ├── docker-compose.yml         # 服务: bridge + mock-relay（测试用）
@@ -214,7 +214,7 @@ livis-bridge/
 
 ### 远端部署（43.129.241.95）
 
-- systemd 服务 `livis-bridge`，`Restart=always`，日志 append 到 `data/bridge.log`
+- systemd 服务 `livis-bridge`（远端服务名保持原名，与仓库名解耦），`Restart=always`，日志 append 到 `data/bridge.log`
 - wrapper `scripts/hermes-livis.sh`：`exec hermes -p livis "$@"`（profile 隔离）
 - **⚠️ 部署后必须清理手动启动的残留实例**：`ps -ef | grep 'src.cli'`，双实例同连一 agentId → 服务端广播 → 双进程双会话双 token（症状：state.db 每任务 2 会话、token 翻倍、延迟升高）
 

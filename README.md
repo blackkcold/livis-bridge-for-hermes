@@ -1,4 +1,4 @@
-# Livis Bridge — 理想 AI 眼镜 × Hermes Agent
+# Livis Bridge for Hermes — 理想 AI 眼镜 × Hermes Agent
 
 > 让理想 AI 眼镜 Livis（「理想同学」App）通过理想官方中继服务器，远程驱动 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 完成问答与任务执行。
 
@@ -27,7 +27,7 @@
         └──────────────────────────────────────────────┘
                                                     │
                                         ┌───────────▼─────────────┐
-                                        │     livis-bridge         │
+                                        │     livis-bridge-for-hermes │
                                         │  protocol.py   WS+认证   │
                                         │  bridge.py     状态机/outbox│
                                         │  adapter.py    子进程驱动   │
@@ -51,8 +51,8 @@
 ### 安装
 
 ```bash
-git clone https://github.com/blackkcold/livis-bridge.git
-cd livis-bridge
+git clone https://github.com/blackkcold/livis-bridge-for-hermes.git
+cd livis-bridge-for-hermes
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 ```
@@ -97,11 +97,11 @@ bridge 连接中继后，会打印 Agent ID（如 `openclaw-xxxx-xxxx`）。
 
 ```bash
 # 容器内跑全套测试（mock 环境，零外部依赖）
-docker build -t livis-bridge .
+docker build -t livis-bridge-for-hermes .
 docker run --rm -v "$PWD/scripts:/app/scripts" \
   -e LIVIS_DATA_DIR=/tmp/test-data \
   -e HERMES_BIN=/app/scripts/fake_hermes.sh \
-  livis-bridge python -m pytest tests/ -v
+  livis-bridge-for-hermes python -m pytest tests/ -v
 
 # 本地跑
 .venv/bin/pip install -e ".[dev]"
