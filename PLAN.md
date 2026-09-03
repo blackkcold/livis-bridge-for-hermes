@@ -210,6 +210,31 @@ livis-bridge/
 
 ---
 
+## 5.5 部署经验（2026-09-03 实测沉淀）
+
+### 远端部署（43.129.241.95）
+
+- systemd 服务 `livis-bridge`，`Restart=always`，日志 append 到 `data/bridge.log`
+- wrapper `scripts/hermes-livis.sh`：`exec hermes -p livis "$@"`（profile 隔离）
+- **⚠️ 部署后必须清理手动启动的残留实例**：`ps -ef | grep 'src.cli'`，双实例同连一 agentId → 服务端广播 → 双进程双会话双 token（症状：state.db 每任务 2 会话、token 翻倍、延迟升高）
+
+### Profile 优化（livis）
+
+- 模型：deepseek-v4-flash:0731 + ollama-cloud
+- 关闭 thinking：`agent.reasoning_overrides: {deepseek-v4-flash:0731: none}`（ollama-cloud 仅认 reasoning_effort:none，extra_body.thinking:disabled 被忽略）
+- toolsets 精简：`hermes -p livis tools disable <ts>`（顶层 `toolsets` 键不生效，-z 读 `platform_toolsets.cli`）
+- 效果：input tokens 15.9K → 5.7K（-64%），延迟 9.3s → 4.9s
+
+### 延迟基线
+
+| 场景 | 延迟 |
+|---|---|
+| 简单问答（优化后） | ~4-5s |
+| 含 web_search | ~7-9s（工具结果进上下文） |
+| 优化前 | 9.3s |
+
+---
+
 ## 6. 风险与缓解
 
 | 风险 | 等级 | 缓解 |
